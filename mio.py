@@ -241,3 +241,113 @@ if st.button("🚀 AVVIA ANALISI MATCH", type="primary"):
     avg_h_ht = safe_div(goals_h['HT'], match_h)
     avg_h_conc_ft = safe_div(goals_h['S_FT'], match_h)
     avg_h_conc_ht = safe_div(goals_h['S_HT'], match_h)
+
+    avg_a_ft = safe_div(goals_a['FT'], match_a)
+    avg_a_ht = safe_div(goals_a['HT'], match_a)
+    avg_a_conc_ft = safe_div(goals_a['S_FT'], match_a)
+    avg_a_conc_ht = safe_div(goals_a['S_HT'], match_a)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info(f"**🏠 {sel_home}** ({match_h} match)\n\n"
+                f"**1°T:** F {avg_h_ht:.2f} / S {avg_h_conc_ht:.2f}\n\n"
+                f"**FIN:** F {avg_h_ft:.2f} / S {avg_h_conc_ft:.2f}")
+    with c2:
+        st.error(f"**✈️ {sel_away}** ({match_a} match)\n\n"
+                 f"**1°T:** F {avg_a_ht:.2f} / S {avg_a_conc_ht:.2f}\n\n"
+                 f"**FIN:** F {avg_a_ft:.2f} / S {avg_a_conc_ft:.2f}")
+
+    # --- POISSON & QUOTE ---
+    exp_h_ft = (avg_h_ft + avg_a_conc_ft) / 2
+    exp_a_ft = (avg_a_ft + avg_h_conc_ft) / 2
+    exp_h_ht = (avg_h_ht + avg_a_conc_ht) / 2
+    exp_a_ht = (avg_a_ht + avg_h_conc_ht) / 2
+
+    def get_poisson_probs(lam_h, lam_a):
+        probs = np.zeros((6, 6))
+        for i in range(6):
+            for j in range(6):
+                probs[i][j] = poisson.pmf(i, lam_h) * poisson.pmf(j, lam_a)
+        p1 = np.sum(np.tril(probs, -1))
+        px = np.sum(np.diag(probs))
+        p2 = np.sum(np.triu(probs, 1))
+        
+        pu25 = 0
+        for i in range(6):
+            for j in range(6):
+                if i+j <= 2: pu25 += probs[i][j]
+        return p1, px, p2, pu25
+
+    p1_ft, px_ft, p2_ft, pu25_ft = get_poisson_probs(exp_h_ft, exp_a_ft)
+    p1_ht, px_ht, p2_ht, _ = get_poisson_probs(exp_h_ht, exp_a_ht) # 1X2 HT
+
+    prob_00_ht = poisson.pmf(0, exp_h_ht) * poisson.pmf(0, exp_a_ht)
+    prob_u15_ht = prob_00_ht + (poisson.pmf(1, exp_h_ht) * poisson.pmf(0, exp_a_ht)) + (poisson.pmf(0, exp_h_ht) * poisson.pmf(1, exp_a_ht))
+
+    def to_odd(p): return round(1/p, 2) if p > 0 else 99.00
+
+    st.subheader("🎲 Previsioni & Quote Implicite")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("1X2 Finale", f"1: {p1_ft*100:.0f}%", f"@{to_odd(p1_ft)}")
+    c1.caption(f"X: {px_ft*100:.0f}% (@{to_odd(px_ft)}) | 2: {p2_ft*100:.0f}% (@{to_odd(p2_ft)})")
+    
+    c2.metric("O/U 2.5 FT", f"Over: {(1-pu25_ft)*100:.0f}%", f"@{to_odd(1-pu25_ft)}")
+    c2.caption(f"Under: {pu25_ft*100:.0f}% (@{to_odd(pu25_ft)})")
+    
+    c3.metric("Speciale 1°T", f"0-0: {prob_00_ht*100:.0f}%", f"@{to_odd(prob_00_ht)}")
+    c3.caption(f"Under 1.5 HT: {prob_u15_ht*100:.0f}% (@{to_odd(prob_u15_ht)})")
+
+    st.divider()
+
+    # --- GRAFICI ---
+    tab1, tab2, tab3 = st.tabs(["📉 Ritmo Gol (Kaplan-Meier)", "⚽ Heatmap Fatti", "🛡️ Heatmap Subiti"])
+
+    with tab1:
+        if times_h and times_a:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            kmf_h = KaplanMeierFitter()
+            kmf_a = KaplanMeierFitter()
+            kmf_l = KaplanMeierFitter()
+
+            kmf_h.fit(times_h, label=f'{sel_home}')
+            kmf_a.fit(times_a, label=f'{sel_away}')
+            if times_league:
+                kmf_l.fit(times_league, label='Media Lega')
+                kmf_l.plot_survival_function(ax=ax, ci_show=False, linewidth=2, color='gray', linestyle='--')
+
+            kmf_h.plot_survival_function(ax=ax, ci_show=False, linewidth=3, color='blue')
+            kmf_a.plot_survival_function(ax=ax, ci_show=False, linewidth=3, color='red')
+            
+            med_h = kmf_h.median_survival_time_
+            med_a = kmf_a.median_survival_time_
+            plt.axhline(0.5, color='green', linestyle=':', label='Mediana (50%)')
+            plt.title(f"Tempo al 1° Gol: {sel_home} (~{med_h:.0f}') vs {sel_away} (~{med_a:.0f}')")
+            plt.grid(True, alpha=0.3)
+            plt.axvline(45, color='green', linestyle='--')
+            plt.legend()
+            st.pyplot(fig)
+        else:
+            st.warning("Dati insufficienti per il grafico KM.")
+
+    # Heatmaps
+    rows_f = []
+    rows_s = []
+    for t in [sel_home, sel_away]:
+        d = stats_match[t]
+        rows_f.append({**{'SQUADRA': t}, **d['F']})
+        rows_s.append({**{'SQUADRA': t}, **d['S']})
+    
+    df_f = pd.DataFrame(rows_f).set_index('SQUADRA')
+    df_s = pd.DataFrame(rows_s).set_index('SQUADRA')
+
+    with tab2:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        sns.heatmap(df_f[intervals], annot=True, cmap="Greens", fmt="d", cbar=False, ax=ax)
+        plt.title("Densità Gol Fatti")
+        st.pyplot(fig)
+    
+    with tab3:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        sns.heatmap(df_s[intervals], annot=True, cmap="Reds", fmt="d", cbar=False, ax=ax)
+        plt.title("Densità Gol Subiti")
+        st.pyplot(fig)
